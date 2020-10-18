@@ -5,15 +5,6 @@ const bodyParser = require("body-parser");
 
 app.use(bodyParser.json());
 
-class Customer {
-    constructor(fName, lName, dob){
-        this.firstName = fName;
-        this.lastName = lName;
-        this.dob = dob;
-        this.balance = 0;
-    }
-}
-
 const client = redis.createClient();
 const multi = client.multi();
 
@@ -35,7 +26,6 @@ function getUserCount(callback){
         }
         else{
             retVal = parseInt(reply);
-            console.log(retVal);
             callback(null, retVal);
         }
     });
@@ -51,7 +41,6 @@ app.get('/getAll', async (req, res)=>{
             console.log(err);
         }
         else{
-            console.log("response is " + response);
             
             uCount = response;
             console.log("uCount is " + uCount);
@@ -70,7 +59,7 @@ app.get('/getAll', async (req, res)=>{
             }
             multi.exec((err,reply)=>{
                 if(err){
-                    console.log(reply);
+                    console.log(err);
                 }
                 else{
                     res.send(reply);
@@ -88,16 +77,19 @@ app.get('/getAll', async (req, res)=>{
 
 app.post('/newClient', (req, res) => {
 
-    // console.log(req.body);
-    var retVal = getUserCount();
+
+    getUserCount((err, response)=>{
+
+        multi.hmset('user:'+parseInt(response+1), 'fName', req.body.fName, 'lName', req.body.lName, 'dob', req.body.dob, 'balance', 0);
+        multi.set("userCount", parseInt(response+1));
         
-    multi.hmset('user:'+retVal, 'fName', req.body.fName, 'lName', req.body.lName, 'dob', req.body.dob, 'balance', 0)
-    multi.set("userCount", parseInt(retVal)+1)
-    
-    multi.exec((err, reply)=>{
-        console.log(reply);
-        res.send("ok");
+        multi.exec((err, reply)=>{
+            console.log(reply);
+            res.send("ok");
+        });
     });
+        
+    
 
 });
 
