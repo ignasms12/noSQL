@@ -6,9 +6,27 @@ const randInt = require('random-int');
 
 app.use(bodyParser.json());
 
-const client = redis.createClient();
+const client = redis.createClient('//dev-server:6379');
 const multi = client.multi();
 
+const body_possibleValues = ['firstName', 'lastName', 'dob'];
+
+sendErr = function (res, err){
+    if(err.length > 0){
+        console.log(err);
+        res.status(500).json({ 
+            status: 'error',
+            message: err.message
+        });
+    }
+    else{
+        console.log('Field not found');
+        res.status(404).json({ 
+            status: 'error',
+            message: 'Field not found'
+        });
+    }
+}
 
 app.listen(5678, () => {
     
@@ -19,78 +37,54 @@ app.listen(5678, () => {
     });
 } );
 
-function getUserCount(callback){
-    var retVal;
-    client.get('userCount', (err, reply) =>{
-        if(err){
-            console.log(err);
-            callback(err.message);
-        }
-        else{
-            retVal = parseInt(reply);
-            callback(null, retVal);
-        }
-    });
-}
 
 
 app.get('/getAll', async (req, res)=>{
     
     
-    var uCount;
-    await getUserCount((err, response)=>{
+    client.keys('user*', (err, reply)=>{
         if(err){
-            console.log(err);
+            sendErr(res, err);
+        }
+        else if(reply.length <= 0){
+            res.status(404).json({
+                status: 'error',
+                message: 'No users found'
+            });
         }
         else{
-            
-            uCount = response;
-            console.log("uCount is " + uCount);
-    
-            let i = 1;
-            while(i < uCount+1){
-                multi.hvals('user:'+i, (err, reply)=>{
-                    if(err){
-                        console.log(err);
-                    }
-                    else{
-                        console.log(reply);
-                    }
-                });
-                i++;
-            }
-            multi.exec((err,reply)=>{
-                if(err){
-                    console.log(err);
-                }
-                else{
-                    res.send(reply);
-                }
-            });
-
+            console.log(reply);
+            res.send(reply);
         }
     });
-    
-    
-
-    
 
 });
 
 app.post('/newAccount', (req, res)=>{
     var userId = 'user:' + req.body.id;
     var acc_no = 'LT' + randInt(100000000000000000, 999999999999999999);
-    multi.hset(userId, 'acc_no', acc_no);
-    multi.hmset('account:'+acc_no, 'acc_no', acc_no, 'user_id', userId, 'balance', 0, 'currency', 'EUR');
-    multi.exec((err, reply)=>{
-        if(err){
-            console.log(err);
+    client.exists(userId, (err, reply)=>{
+        if(reply == 1){
+            multi.hset(userId, 'acc_no', acc_no);
+            multi.hmset('account:'+acc_no, 'acc_no', acc_no, 'user_id', userId, 'balance', 0, 'currency', 'EUR');
+            multi.exec((error, resp)=>{
+                if(err){
+                    sendErr(res, error);
+                }
+                else{
+                    console.log(resp);
+                    res.send(`Account ${acc_no} has been successfully created for user ${userId}`);
+                }
+            });
         }
         else{
-            console.log(reply);
-            res.send('cool beans');
+            res.status(404).json({
+                status: 'error',
+                message: `${userId} was not found`
+            });
         }
     });
+    
 });
 
 app.post('/newClient', (req, res) => {
@@ -99,6 +93,20 @@ app.post('/newClient', (req, res) => {
     var firstName = req.body.fName;
     var lastName = req.body.lName;
     var dob = req.body.dob;
+    if(!firstName || !lastName || !dob){
+        res.status(500).json({
+            status: 'error',
+            message: 'Missing fields'
+        });
+        return 0;
+    }
+    // if(firstName.length == 0 || lastName.length == 0 || dob.length == 0){
+    //     res.status(500).json({
+    //         status: 'error',
+    //         message: 'Provided fields cannot be empty'
+    //     });
+    // }
+
     if(req.body.isAcc){
         var acc_no = 'LT' + randInt(100000000000000000, 999999999999999999);
     }
@@ -113,12 +121,19 @@ app.post('/newClient', (req, res) => {
     
     multi.exec((err, reply)=>{
         if(err){
-            console.log(err);
+            sendErr(res, err);
         }
         else{
             console.log(reply);
+            if(acc_no){
+                res.send(`User with id - ${id} - and account number - ${acc_no} - has been successfully created`);
+            }
+            else{
+                res.send(`User with id - ${id} - has been successfully created`);
+            }
+            
         }
-        res.send("ok");
+        
     });
     
 
@@ -132,32 +147,90 @@ app.put('/sendMoney', (req, res)=>{
     var amount = req.body.amount;
     var r_acc_id = req.body.receiverAccID;
     var tr_id = randInt(1000, 10000);
+    var status;
+    var message;
+    var funStat;
 
-    client.hget('user:'+s_id, 'acc_no', (error, s_acc_id)=>{
-        
-        multi.hmset('transaction:'+tr_id, 'senderID', s_id, 'senderAccID', s_acc_id, 'receiverID', r_id, 'receiverAccID', r_acc_id, 'amount', amount, 'status', 'PENDING');
-        client.hget('account:'+s_acc_id, 'balance', (err, reply)=>{
-            if(reply >= amount){
-                console.log("reply is more than amount");
-                multi.hincrby('account:'+s_acc_id, 'balance', -amount);
-                multi.hincrby('account:'+r_acc_id, 'balance', amount);
-                multi.hset('transaction:'+tr_id, 'status', 'COMPLETED');
-            }
-            else{
-                multi.hset('transaction:'+tr_id, 'status', 'CANCELLED');
-            }
-            multi.exec((err,reply)=>{
-                if(err){
-                    console.log(err);
+    client.exists(`user:${s_id}`, (err, reply)=>{
+        if(reply == 1){
+            client.exists(`user:${r_id}`, (err, reply)=>{
+                if(reply == 1){
+                    
+                    client.hget(`user:${r_id}`, 'acc_no', (err, reply)=>{
+                        if(err){
+                            console.log(err);
+                        }
+                        if(reply == r_acc_id){
+                            console.log(`Provided account number is the same as the receiver's account number`);
+                        }
+                        else{
+                            res.status(500).json({
+                                status: 'error',
+                                message: `Provided account number does not match the receiver's account number`
+                            });
+                            funStat = 0;
+                        }
+                    });
+
+                    if(funStat = 0){
+                        return 0;
+                    }
+                    
+                    client.hget('user:'+s_id, 'acc_no', (error, s_acc_id)=>{
+                        status = 'PENDING';
+                        multi.hmset('transaction:'+tr_id, 'senderID', s_id, 'senderAccID', s_acc_id, 'receiverID', r_id, 'receiverAccID', r_acc_id, 'amount', amount, 'status', status);
+                        console.log(`Transaction ${tr_id} has been created with status ${status}`);
+                        client.hget('account:'+s_acc_id, 'balance', (err, reply)=>{
+                
+                            if(reply >= amount){
+                                multi.hincrby('account:'+s_acc_id, 'balance', -amount);
+                                multi.hincrby('account:'+r_acc_id, 'balance', amount);
+                                status = 'COMPLETED';
+                                multi.hset('transaction:'+tr_id, 'status', status);
+                            }
+                            else{
+                                status = 'CANCELLED';
+                                message = 'Insufficient funds'
+                                multi.hset('transaction:'+tr_id, 'status', status);
+                            }
+                            multi.exec((err,reply)=>{
+                                if(err){
+                                    sendErr(res, err);
+                                }
+                                else{
+                                    console.log(`Transaction ${tr_id} has been updated with status - ${status}`);
+                                    console.log(`Reply from database is: ${reply}`);
+                                    if(message){
+                                        res.send(`Transaction ${tr_id} has been updated with status - ${status}, reason - ${message}`);
+                                    }
+                                    else{
+                                        res.send(`Transaction ${tr_id} has been updated with status - ${status}`);
+                                    }
+                                }
+                            });
+                        });
+                        
+                    });
+
+
                 }
                 else{
-                    console.log(reply);
-                    res.send("everything will be okay");
+                    res.status(404).json({
+                        status: 'error',
+                        message: `User:${r_id} does not exist`
+                    })
                 }
             });
-        });
-        
+        }
+        else{
+            res.status(404).json({
+                status: 'error',
+                message: `User:${s_id} does not exist`
+            })
+        }
     });
+
+    
 
     
 });
@@ -170,22 +243,46 @@ app.put('/updateInfo', (req, res)=>{
     var data = req.body.data;
     var values = [];
     var keys = [];
+
+
     for (var item in data){
         keys.push(`${item}`);
         values.push(`${data[item]}`);
     }
-    for(let i =0; i < keys.length; i++){
-        multi.hset('user:'+id, keys[i], values[i]);
+
+    for(let i=0; i < keys.length; i++){
+        if(body_possibleValues.includes(keys[i]) == false){
+            res.status(404).json({
+                status: 'error',
+                message: 'Invalid fields'
+            });
+            return 0;
+        } 
     }
-    multi.exec((err, reply)=>{
-        if(err){
-            console.log(err)
+
+    client.exists('user:'+id, (err, reply)=>{
+
+        if(reply == 1){
+            for(let i =0; i < keys.length; i++){
+                multi.hset('user:'+id, keys[i], values[i]);
+            }
+            multi.exec((err, reply)=>{
+                if(err){
+                    sendErr(res, err);
+                }
+                else{
+                    console.log(reply);
+                    res.send(`Data has been updated for user:${id}`);
+                }
+            });
         }
         else{
-            console.log(reply);
-            res.send("ok");
+            res.status(404).json({
+                status: 'error',
+                message: `User:${id} was not found`
+            });
         }
-    })
+    });
 });
 
 
@@ -196,59 +293,89 @@ app.put('/updateInfo', (req, res)=>{
 app.delete('/deleteUser', (req, res)=>{
     var id = req.body.id;
 
-    client.hget('user:'+id, 'acc_no', (err, reply)=>{
-        if(err){
-            console.log(err);
-        }
-        else{
-            if(reply != null){
-                multi.del('user:'+id);
-                multi.del('account:'+reply);
-                console.log("reply is not null");
-            }
-            else{
-                multi.del('user:'+id);
-                console.log("reply is null");
-            }
-            multi.exec((err, resp)=>{
+    client.exists('user:'+id, (err, response)=>{
+        if(response == 1){
+            client.hget('user:'+id, 'acc_no', (err, reply)=>{
                 if(err){
                     console.log(err);
+                    sendErr(res, err);
                 }
                 else{
-                    console.log(resp);
-                    res.send('wazeeep');
+                    if(reply != null){
+                        multi.del('user:'+id);
+                        multi.del('account:'+reply);
+                    }
+                    else{
+                        multi.del('user:'+id);
+                    }
+                    multi.exec((error, resp)=>{
+                        if(error){
+                            sendErr(res, error);
+                        }
+                        else{
+                            console.log(resp);
+                            res.send(`User:${id} has been deleted`);
+                        }
+                    });
                 }
             });
         }
+        else{
+            res.status(404).json({
+                status: 'error',
+                message: `User:${id} was not found`
+            });
+        }
     });
+    
     
 });
 
 app.post('/putMoney', (req, res) => {
     var money = req.body.deposit;
     var user = 'user:' + req.body.id;
-    multi.hset(user, 'balance', money);
-    multi.exec((err, reply)=>{
+    if(Number.isInteger(parseInt(money)) == false){
+        res.status(500).json({ 
+            status: 'error',
+            message: 'Deposit has to be an integer'
+        });
+        return 0;
+    };
+
+    client.hget(user, 'acc_no', (err, resp)=>{
         if(err){
-            console.log(err);
+            sendErr(res, err);
         }
-        else{
-            res.send(money + " added to the account of the user " + user);
-        }
+        multi.hincrby(`account:${resp}`, 'balance', money);
+        multi.exec((error, reply)=>{
+            if(error){
+                console.log(error);
+            }
+            else{
+                res.send(`${money} added to the account ${resp}`);
+            }
+        });
+
     });
+    
     
 });
 
 app.get('/checkBalance', (req, res) => {
     var user = 'user:' + req.body.id;
-    multi.hget(user, 'balance');
-    multi.exec((err, reply)=>{
-        if(err){
-            console.log(err);
-        }
-        else{
-            console.log('Balance of ' + user + " is " + reply);
-            res.send(reply);
-        }
+    client.hget(user, 'acc_no', (err, resp)=>{
+
+        multi.hget('account:'+resp, 'balance');
+        multi.exec((err, reply)=>{
+            if(err){
+                sendErr(res, err);
+            }
+            else{
+                console.log(`Balance of ${user} is ${reply}`);
+                res.send(`Balance of ${user} (${resp}) is ${reply}`);
+            }
+        });
+
     });
+    
 });
